@@ -129,7 +129,7 @@ ListView.include({
         this._super.apply(this, arguments); // Sets this.$buttons
         
         this.$buttons.find("button#button_export_excel").click(function(event){
-            console.log ( 'excel was clicked' );
+            console.log ( 'excel was clicked ----' );
         	self.export_to_excel("excel");
     	});
     	
