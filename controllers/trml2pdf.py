@@ -111,9 +111,6 @@ class PageCount(platypus.Flowable):
 class PageReset(platypus.Flowable):
     def draw(self):
         self.canv._doPageReset = True
-class PageReset(platypus.Flowable):
-    def draw(self):
-        self.canv._doPageReset = True
 
 class _rml_styles(object,):
     def __init__(self, nodes, localcontext):

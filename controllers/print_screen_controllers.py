@@ -23,8 +23,8 @@ try:
 except ImportError:
     xlwt = None
 
-class ZbExcelExport(ExcelExport):
-    _cp_path = '/web/export/zb_excel_export'
+class MwExcelExport(ExcelExport):
+    _cp_path = '/web/export/mw_excel_export'
 
     def from_data(self, fields, rows):
         workbook = xlwt.Workbook()
@@ -71,8 +71,8 @@ class ZbExcelExport(ExcelExport):
         data = fp.read()
         fp.close()
         return data
-    
-    @openerpweb.httprequest
+
+    @openerpweb.route(_cp_path)
     def index(self, req, data, token):
         data = json.loads(data)
         return req.make_response(
@@ -86,7 +86,7 @@ class ZbExcelExport(ExcelExport):
                                  )
 
 class ExportPdf(Export):
-    _cp_path = '/web/export/zb_pdf'
+    _cp_path = '/web/export/mw_pdf'
     fmt = {
         'tag': 'pdf',
         'label': 'PDF',
@@ -152,10 +152,10 @@ class ExportPdf(Export):
         self.obj = trml2pdf.parseNode(rml, title='Printscreen')
         return self.obj
 
-class ZbPdfExport(ExportPdf):
-    _cp_path = '/web/export/zb_pdf_export'
+class MwPdfExport(ExportPdf):
+    _cp_path = '/web/export/mw_pdf_export'
     
-    @openerpweb.httprequest
+    @openerpweb.route(_cp_path)
     def index(self, req, data, token):
         data = json.loads(data)
         uid = data.get('uid', False)

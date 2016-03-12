@@ -1,4 +1,4 @@
-odoo.define('web_printscreen_zb', function (require) {
+odoo.define('Web_Printscreen', function (require) {
 "use strict";
 
 var core = require('web.core');
@@ -96,7 +96,7 @@ ListView.include({
             $.blockUI();
             if (export_type === 'excel'){
                  this.session.get_file({
-                     url: '/web/export/zb_excel_export',
+                     url: '/web/export/mw_excel_export',
                      data: {data: JSON.stringify({
                             model : view.model,
                             headers : header_name_list,
@@ -109,7 +109,7 @@ ListView.include({
                 new Model("res.users").get_func("read")(this.session.uid, ["company_id"]).then(function(res) {
                     new Model("res.company").get_func("read")(res['company_id'][0], ["name"]).then(function(result) {
                         view.session.get_file({
-                             url: '/web/export/zb_pdf_export',
+                             url: '/web/export/mw_pdf_export',
                              data: {data: JSON.stringify({
                                     uid: view.session.uid,
                                     model : view.model,
@@ -128,12 +128,14 @@ ListView.include({
             	
         this._super.apply(this, arguments); // Sets this.$buttons
         
-        this.$buttons.find("a#button_export_excel").click(function(event){
-        		self.export_to_excel("excel");
+        this.$buttons.find("button#button_export_excel").click(function(event){
+            console.log ( 'excel was clicked' );
+        	self.export_to_excel("excel");
     	});
     	
-    	this.$buttons.find("a#button_export_pdf").click(function(event){
-        		self.export_to_excel("pdf");
+    	this.$buttons.find("button#button_export_pdf").click(function(event){
+    	    console.log ( 'pdf was clicked' );
+        	self.export_to_excel("pdf");
     	});
     }
 });
