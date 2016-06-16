@@ -123,14 +123,18 @@ ListView.include({
                 });
              }
         }, 
-    render_pager: function() {
+    render_buttons: function() {
         var self = this;
+        console.log (arguments);
         this._super.apply(this, arguments); // Sets this.$buttons
-        this.$pager.find("button#button_export_excel").click(function(event){
+        
+        this.$buttons.find("button#button_export_excel").click(function(event){
+            console.log ( 'excel was clicked ----' );
         	self.export_to_excel("excel");
     	});
 
-    	this.$pager.find("button#button_export_pdf").click(function(event){
+    	this.$buttons.find("button#button_export_pdf").click(function(event){
+    	    console.log ( 'pdf was clicked' );
         	self.export_to_excel("pdf");
     	});
     }
