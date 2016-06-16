@@ -126,11 +126,11 @@ ListView.include({
     render_pager: function() {
         var self = this;
         this._super.apply(this, arguments); // Sets this.$buttons
-        this.$pager.find("button#button_export_excel").click(function(event){
+        this.$pager.find("a#button_export_excel").click(function(event){
         	self.export_to_excel("excel");
     	});
 
-    	this.$pager.find("button#button_export_pdf").click(function(event){
+    	this.$pager.find("a#button_export_pdf").click(function(event){
         	self.export_to_excel("pdf");
     	});
     }
