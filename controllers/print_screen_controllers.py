@@ -10,11 +10,9 @@ import re
 import time
 from cStringIO import StringIO
 
-import openerp.addons.web.http as openerpweb
-import openerp.tools as tools
+from odoo import http, tools
 from lxml  import etree
-from openerp.addons.web.controllers.main import ExcelExport
-from openerp.addons.web.controllers.main import Export
+from openerp.addons.web.controllers.main import ExcelExport, Export
 
 import trml2pdf
 
@@ -72,7 +70,7 @@ class MwExcelExport(ExcelExport):
         fp.close()
         return data
 
-    @openerpweb.route(_cp_path)
+    @http.route(_cp_path)
     def index(self, req, data, token):
         data = json.loads(data)
         return req.make_response(
@@ -114,10 +112,6 @@ class ExportPdf(Export):
         _append_node('PageFormat', 'a4')
         _append_node('header-date', time.strftime(str(locale.nl_langinfo(locale.D_FMT).replace('%y', '%Y'))))
         _append_node('company', company_name)
-        l = []
-        t = 0
-        temp = []
-        tsum = []
         skip_index = []
         header = etree.SubElement(new_doc, 'header')
         i = 0
@@ -130,6 +124,7 @@ class ExportPdf(Export):
                 skip_index.append(i)
             i += 1
         lines = etree.SubElement(new_doc, 'lines')
+        print 12, rows
         for row_lines in rows:
             node_line = etree.SubElement(lines, 'row')
             j = 0
@@ -149,15 +144,19 @@ class ExportPdf(Export):
             etree.parse(os.path.join(tools.config['root_path'],
                                      'addons/base/report/custom_new.xsl')))
         rml = etree.tostring(transform(new_doc))
+        print 32, new_doc
+        print 33, rml
         self.obj = trml2pdf.parseNode(rml, title='Printscreen')
         return self.obj
 
 class MwPdfExport(ExportPdf):
     _cp_path = '/web/export/mw_pdf_export'
     
-    @openerpweb.route(_cp_path)
+    @http.route(_cp_path)
     def index(self, req, data, token):
+        print 1, data
         data = json.loads(data)
+        print 1, data
         uid = data.get('uid', False)
         return req.make_response(self.from_data(uid, data.get('headers', []), data.get('rows', []),
                                                 data.get('company_name','')),

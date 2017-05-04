@@ -5,7 +5,7 @@
     <data>
         <template id="assets_backend" name="web_printscreen_mw assets" inherit_id="web.assets_backend">
             <xpath expr="." position="inside">
-                <script type="text/javascript" src="/Web-Printscreen/static/src/js/web_printscreen_mw.js"></script>
+                <script type="text/javascript" src="/web_printscreen_mw/static/src/js/web_printscreen_mw.js"></script>
             </xpath>
         </template>
     </data>
