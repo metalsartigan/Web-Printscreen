@@ -124,7 +124,6 @@ class ExportPdf(Export):
                 skip_index.append(i)
             i += 1
         lines = etree.SubElement(new_doc, 'lines')
-        print 12, rows
         for row_lines in rows:
             node_line = etree.SubElement(lines, 'row')
             j = 0
@@ -144,8 +143,6 @@ class ExportPdf(Export):
             etree.parse(os.path.join(tools.config['root_path'],
                                      'addons/base/report/custom_new.xsl')))
         rml = etree.tostring(transform(new_doc))
-        print 32, new_doc
-        print 33, rml
         self.obj = trml2pdf.parseNode(rml, title='Printscreen')
         return self.obj
 
@@ -154,9 +151,7 @@ class MwPdfExport(ExportPdf):
     
     @http.route(_cp_path)
     def index(self, req, data, token):
-        print 1, data
         data = json.loads(data)
-        print 1, data
         uid = data.get('uid', False)
         return req.make_response(self.from_data(uid, data.get('headers', []), data.get('rows', []),
                                                 data.get('company_name','')),
