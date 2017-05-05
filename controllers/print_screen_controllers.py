@@ -10,11 +10,9 @@ import re
 import time
 from cStringIO import StringIO
 
-import openerp.addons.web.http as openerpweb
-import openerp.tools as tools
+from odoo import http, tools
 from lxml  import etree
-from openerp.addons.web.controllers.main import ExcelExport
-from openerp.addons.web.controllers.main import Export
+from openerp.addons.web.controllers.main import ExcelExport, Export
 
 import trml2pdf
 
@@ -72,7 +70,7 @@ class MwExcelExport(ExcelExport):
         fp.close()
         return data
 
-    @openerpweb.route(_cp_path)
+    @http.route(_cp_path)
     def index(self, req, data, token):
         data = json.loads(data)
         return req.make_response(
@@ -114,10 +112,6 @@ class ExportPdf(Export):
         _append_node('PageFormat', 'a4')
         _append_node('header-date', time.strftime(str(locale.nl_langinfo(locale.D_FMT).replace('%y', '%Y'))))
         _append_node('company', company_name)
-        l = []
-        t = 0
-        temp = []
-        tsum = []
         skip_index = []
         header = etree.SubElement(new_doc, 'header')
         i = 0
@@ -155,7 +149,7 @@ class ExportPdf(Export):
 class MwPdfExport(ExportPdf):
     _cp_path = '/web/export/mw_pdf_export'
     
-    @openerpweb.route(_cp_path)
+    @http.route(_cp_path)
     def index(self, req, data, token):
         data = json.loads(data)
         uid = data.get('uid', False)
