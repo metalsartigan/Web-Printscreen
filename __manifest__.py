@@ -1,5 +1,3 @@
-# -*- encoding: utf-8 -*-
-
 {
     'name': 'Web Printscreen MW',
     'version': '1.0',
@@ -10,6 +8,7 @@
     'author': 'Manexware S.A.',
     'website': 'http://www.manexware.com',
     'depends': ['web'],
+    'external_dependencies': {'python': ['trml2pdf']},
     'data': ['views/web_printscreen_mw.xml'],
     'qweb': ['static/src/xml/web_printscreen_export.xml'],
     'installable': True,

@@ -1,5 +1,3 @@
-# -*- encoding: utf-8 -*-
-
 try:
     import json
 except ImportError:
@@ -8,18 +6,19 @@ import locale
 import os
 import re
 import time
-from cStringIO import StringIO
+from io import BytesIO
 
 from odoo import http, tools
-from lxml  import etree
-from openerp.addons.web.controllers.main import ExcelExport, Export
+from lxml import etree
+from odoo.addons.web.controllers.main import ExcelExport, Export
 
-import trml2pdf
+from . import trml2pdf
 
 try:
     import xlwt
 except ImportError:
     xlwt = None
+
 
 class MwExcelExport(ExcelExport):
     _cp_path = '/web/export/mw_excel_export'
@@ -54,16 +53,17 @@ class MwExcelExport(ExcelExport):
                     if cell_value.get('bold', False):
                         cell_style = bold_style
                     cellvalue = cell_value.get('data', '')
-                    if isinstance(cellvalue, basestring):
+                    if isinstance(cellvalue, str):
                         cellvalue = re.sub("\r", " ", cellvalue)
                         #787
 #                     if cell_value.get('number', False) and cellvalue:
 #                         cellvalue = float(cellvalue)
-                    if cellvalue is False: cellvalue = None
+                    if cellvalue is False:
+                        cellvalue = None
                     worksheet.write(row_index + 1, cell_index - count, cellvalue, cell_style)
                 else:
                     count += 1
-        fp = StringIO()
+        fp = BytesIO()
         workbook.save(fp)
         fp.seek(0)
         data = fp.read()
@@ -83,6 +83,7 @@ class MwExcelExport(ExcelExport):
                                  cookies={'fileToken': token}
                                  )
 
+
 class ExportPdf(Export):
     _cp_path = '/web/export/mw_pdf'
     fmt = {
@@ -99,7 +100,7 @@ class ExportPdf(Export):
         return base + '.pdf'
     
     def from_data(self, uid, fields, rows, company_name):
-        pageSize=[210.0,297.0]
+        pageSize = [210.0, 297.0]
         new_doc = etree.Element("report")
         config = etree.SubElement(new_doc, 'config')
         def _append_node(name, text):
@@ -146,6 +147,7 @@ class ExportPdf(Export):
         self.obj = trml2pdf.parseNode(rml, title='Printscreen')
         return self.obj
 
+
 class MwPdfExport(ExportPdf):
     _cp_path = '/web/export/mw_pdf_export'
     
@@ -158,6 +160,6 @@ class MwPdfExport(ExportPdf):
                                  headers=[('Content-Disposition',
                                            'attachment; filename=PDF Export'),
                                           ('Content-Type', self.content_type)],
-                                 cookies={'fileToken': bytes(token)})
+                                 cookies={'fileToken': bytes(token, 'utf8')})
 
 # vim:expandtab:smartindent:tabstop=4:softtabstop=4:shiftwidth=4:

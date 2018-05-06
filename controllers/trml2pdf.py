@@ -1,33 +1,57 @@
-# -*- encoding: utf-8 -*-
+# Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-import sys
-import copy
-import reportlab
-import re
-from reportlab.pdfgen import canvas
-from reportlab import platypus
-from openerp.report.render.rml2pdf import utils
-from openerp.report.render.rml2pdf import color
-import os
-import logging
-from lxml import etree
 import base64
-from reportlab.platypus.doctemplate import ActionFlowable
-from openerp.tools.safe_eval import safe_eval as eval
-from reportlab.lib.units import inch,cm,mm
-from openerp.tools.misc import file_open
-from reportlab.pdfbase import pdfmetrics
-from reportlab.lib.pagesizes import A4, letter
+import copy
+import logging
+import os
+import re
+import sys
+import traceback
+from distutils.version import LooseVersion
 
 try:
     from cStringIO import StringIO
-    _hush_pyflakes = [ StringIO ]
+    _hush_pyflakes = [StringIO]
 except ImportError:
-    from StringIO import StringIO
+    from io import StringIO, BytesIO
+
+import reportlab
+from reportlab import platypus
+from reportlab.lib.pagesizes import A4, letter
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfgen import canvas
+from reportlab.platypus.doctemplate import ActionFlowable
+from lxml import etree
+
+from odoo.tools.misc import file_open
+from odoo.tools.safe_eval import safe_eval
+from . import color
+from . import utils
+
+try:
+    from .customfonts import SetCustomFonts
+except ImportError:
+    SetCustomFonts=lambda x:None
 
 _logger = logging.getLogger(__name__)
 
 encoding = 'utf-8'
+
+def select_fontname(fontname, default_fontname):
+    if fontname not in pdfmetrics.getRegisteredFontNames()\
+         or fontname not in pdfmetrics.standardFonts:
+        # let reportlab attempt to find it
+        try:
+            pdfmetrics.getFont(fontname)
+        except Exception:
+            addition = ""
+            if " " in fontname:
+                addition = ". Your font contains spaces which is not valid in RML."
+            _logger.warning('Could not locate font %s, substituting default: %s%s',
+                fontname, default_fontname, addition)
+            fontname = default_fontname
+    return fontname
+
 
 def _open_image(filename, path=None):
     """Attempt to open a binary file and return the descriptor
@@ -49,53 +73,33 @@ def _open_image(filename, path=None):
             pass
     raise IOError("File %s cannot be found in image path" % filename)
 
+
 class NumberedCanvas(canvas.Canvas):
     def __init__(self, *args, **kwargs):
         canvas.Canvas.__init__(self, *args, **kwargs)
-        self._codes = []
-        self._flag=False
-        self._pageCount=0
-        self._currentPage =0
-        self._pageCounter=0
-        self.pages={}
+        self._saved_page_states = []
 
     def showPage(self):
-        self._currentPage +=1
-        if not self._flag:
-            self._pageCount += 1
-        else:
-            self.pages.update({self._currentPage:self._pageCount})
-        self._codes.append({'code': self._code, 'stack': self._codeStack})
         self._startPage()
-        self._flag=False
-
-    def pageCount(self):
-        if self.pages.get(self._pageCounter,False):
-            self._pageNumber=0
-        self._pageCounter +=1
-        key=self._pageCounter
-        if not self.pages.get(key,False):
-            while not self.pages.get(key,False):
-                key += 1
-        self.setFont("Helvetica", 8)
-        self.drawRightString((self._pagesize[0]-30), (self._pagesize[1]-40),
-            " %(this)i / %(total)i" % {
-               'this': self._pageNumber+1,
-               'total': self.pages.get(key,False),
-            }
-        )
 
     def save(self):
         """add page info to each page (page x of y)"""
-        # reset page counter
-        self._pageNumber = 0
-        for code in self._codes:
-            self._code = code['code']
-            self._codeStack = code['stack']
-            self.pageCount()
+        for state in self._saved_page_states:
+            self.__dict__.update(state)
+            self.draw_page_number()
             canvas.Canvas.showPage(self)
-#        self.restoreState()
-        self._doc.SaveToFile(self._filename, self)
+        canvas.Canvas.save(self)
+
+    def draw_page_number(self):
+        page_count = len(self._saved_page_states)
+        self.setFont("Helvetica", 8)
+        self.drawRightString((self._pagesize[0]-30), (self._pagesize[1]-40),
+            " %(this)i / %(total)i" % {
+               'this': self._pageNumber,
+               'total': page_count,
+            }
+        )
+
 
 class PageCount(platypus.Flowable):
     def __init__(self, story_count=0):
@@ -110,6 +114,8 @@ class PageCount(platypus.Flowable):
 
 class PageReset(platypus.Flowable):
     def draw(self):
+        """Flag to close current story page numbering and prepare for the next
+        should be executed after the rendering of the full story"""
         self.canv._doPageReset = True
 
 class _rml_styles(object,):
@@ -127,9 +133,11 @@ class _rml_styles(object,):
             for style in node.findall('paraStyle'):
                 sname = style.get('name')
                 self.styles[sname] = self._para_style_update(style)
-
-                self.styles_obj[sname] = reportlab.lib.styles.ParagraphStyle(sname, self.default_style["Normal"], **self.styles[sname])
-
+                if self.default_style.has_key(sname):
+                    for key, value in self.styles[sname].items():                    
+                        setattr(self.default_style[sname], key, value)
+                else:
+                    self.styles_obj[sname] = reportlab.lib.styles.ParagraphStyle(sname, self.default_style["Normal"], **self.styles[sname])
             for variable in node.findall('initialize'):
                 for name in variable.findall('name'):
                     self.names[ name.get('id')] = name.get('value')
@@ -139,7 +147,12 @@ class _rml_styles(object,):
         for attr in ['textColor', 'backColor', 'bulletColor', 'borderColor']:
             if node.get(attr):
                 data[attr] = color.get(node.get(attr))
-        for attr in ['fontName', 'bulletFontName', 'bulletText']:
+        for attr in ['bulletFontName', 'fontName']:
+            if node.get(attr):
+                fontname= select_fontname(node.get(attr), None)
+                if fontname is not None:
+                    data['fontName'] = fontname
+        for attr in ['bulletText']:
             if node.get(attr):
                 data[attr] = node.get(attr)
         for attr in ['fontSize', 'leftIndent', 'rightIndent', 'spaceBefore', 'spaceAfter',
@@ -154,6 +167,7 @@ class _rml_styles(object,):
                 'justify':reportlab.lib.enums.TA_JUSTIFY
             }
             data['alignment'] = align.get(node.get('alignment').lower(), reportlab.lib.enums.TA_LEFT)
+        data['splitLongWords'] = 0
         return data
 
     def _table_style_get(self, style_node):
@@ -202,7 +216,7 @@ class _rml_styles(object,):
             if sname in self.styles_obj:
                 style = self.styles_obj[sname]
             else:
-                _logger.warning('Warning: style not found, %s - setting default!\n' % (node.get('style'),) )
+                _logger.debug('Warning: style not found, %s - setting default!', node.get('style'))
         if not style:
             style = self.default_style['Normal']
         para_update = self._para_style_update(node)
@@ -231,20 +245,36 @@ class _rml_doc(object):
         from reportlab.pdfbase.ttfonts import TTFont
 
         for node in els:
+
             for font in node.findall('registerFont'):
-                name = font.get('fontName').encode('ascii')
-                fname = font.get('fontFile').encode('ascii')
+                name = font.get('fontName').encode('ascii').decode()
+                fname = font.get('fontFile').encode('ascii').decode()
                 if name not in pdfmetrics._fonts:
                     pdfmetrics.registerFont(TTFont(name, fname))
+                #by default, we map the fontName to each style (bold, italic, bold and italic), so that 
+                #if there isn't any font defined for one of these style (via a font family), the system
+                #will fallback on the normal font.
                 addMapping(name, 0, 0, name)    #normal
                 addMapping(name, 0, 1, name)    #italic
                 addMapping(name, 1, 0, name)    #bold
                 addMapping(name, 1, 1, name)    #italic and bold
 
+            #if registerFontFamily is defined, we register the mapping of the fontName to use for each style.
+            for font_family in node.findall('registerFontFamily'):
+                family_name = font_family.get('normal').encode('ascii').decode()
+                if font_family.get('italic'):
+                    addMapping(family_name, 0, 1, font_family.get('italic').encode('ascii').decode())
+                if font_family.get('bold'):
+                    addMapping(family_name, 1, 0, font_family.get('bold').encode('ascii').decode())
+                if font_family.get('boldItalic'):
+                    addMapping(family_name, 1, 1, font_family.get('boldItalic').encode('ascii').decode())
+
     def setTTFontMapping(self,face, fontname, filename, mode='all'):
         from reportlab.lib.fonts import addMapping
-        from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.ttfonts import TTFont
+
+        if mode:
+            mode = mode.lower()
 
         if fontname not in pdfmetrics._fonts:
             pdfmetrics.registerFont(TTFont(fontname, filename))
@@ -253,19 +283,19 @@ class _rml_doc(object):
             addMapping(face, 0, 1, fontname)    #italic
             addMapping(face, 1, 0, fontname)    #bold
             addMapping(face, 1, 1, fontname)    #italic and bold
-        elif (mode== 'normal') or (mode == 'regular'):
-            addMapping(face, 0, 0, fontname)    #normal
-        elif mode == 'italic':
+        elif mode in ['italic', 'oblique']:
             addMapping(face, 0, 1, fontname)    #italic
         elif mode == 'bold':
             addMapping(face, 1, 0, fontname)    #bold
-        elif mode == 'bolditalic':
+        elif mode in ('bolditalic', 'bold italic','boldoblique', 'bold oblique'):
             addMapping(face, 1, 1, fontname)    #italic and bold
+        else:
+            addMapping(face, 0, 0, fontname)    #normal
 
     def _textual_image(self, node):
         rc = ''
         for n in node:
-            rc +=( etree.tostring(n) or '') + n.tail
+            rc +=( etree.tostring(n).decode() or '') + n.tail
         return base64.decodestring(node.tostring())
 
     def _images(self, el):
@@ -317,7 +347,8 @@ class _rml_canvas(object):
             self.canvas.setTitle(self.title)
 
     def _textual(self, node, x=0, y=0):
-        text = node.text and node.text.encode('utf-8') or ''
+
+        text = node.text and node.text.encode('utf-8').decode() or ''
         rc = utils._process_text(self, text)
         for n in node:
             if n.tag == 'seq':
@@ -333,13 +364,17 @@ class _rml_canvas(object):
             if n.tag == 'pageNumber':
                 rc += str(self.canvas.getPageNumber())
             rc += utils._process_text(self, n.tail)
-        return rc.replace('\n','')
+        return rc.replace('\n', '')
 
     def _drawString(self, node):
         v = utils.attr_get(node, ['x','y'])
-        text=self._textual(node, **v)
+        text = self._textual(node, **v)
         text = utils.xml2str(text)
-        self.canvas.drawString(text=text, **v)
+        try:
+            self.canvas.drawString(text=text, **v)
+        except TypeError:
+            _logger.info("Bad RML: <drawString> tag requires attributes 'x' and 'y'!")
+            raise
 
     def _drawCenteredString(self, node):
         v = utils.attr_get(node, ['x','y'])
@@ -397,7 +432,7 @@ class _rml_canvas(object):
         self.canvas.circle(x_cen=utils.unit_get(node.get('x')), y_cen=utils.unit_get(node.get('y')), r=utils.unit_get(node.get('radius')), **utils.attr_get(node, [], {'fill':'bool','stroke':'bool'}))
 
     def _place(self, node):
-        flows = _rml_flowable(self.doc, self.localcontext, images=self.images, path=self.path, title=self.title).render(node)
+        flows = _rml_flowable(self.doc, self.localcontext, images=self.images, path=self.path, title=self.title, canvas=self.canvas).render(node)
         infos = utils.attr_get(node, ['x','y','width','height'])
 
         infos['y']+=infos['height']
@@ -430,7 +465,7 @@ class _rml_canvas(object):
 
     def _image(self, node):
         import urllib
-        import urlparse
+        from urllib.parse import urlparse
         from reportlab.lib.utils import ImageReader
         nfile = node.get('file')
         if not nfile:
@@ -443,7 +478,7 @@ class _rml_canvas(object):
                 if self.localcontext:
                     res = utils._regex.findall(newtext)
                     for key in res:
-                        newtext = eval(key, {}, self.localcontext) or ''
+                        newtext = safe_eval(key, {}, self.localcontext) or ''
                 image_data = None
                 if newtext:
                     image_data = base64.decodestring(newtext)
@@ -517,17 +552,7 @@ class _rml_canvas(object):
         self.canvas.drawPath(self.path, **utils.attr_get(node, [], {'fill':'bool','stroke':'bool'}))
 
     def setFont(self, node):
-        fontname = node.get('name')
-        if fontname not in pdfmetrics.getRegisteredFontNames()\
-             or fontname not in pdfmetrics.standardFonts:
-                # let reportlab attempt to find it
-                try:
-                    pdfmetrics.getFont(fontname)
-                except Exception:
-                    _logger.debug('Could not locate font %s, substituting default: %s',
-                                 fontname,
-                                 self.canvas._fontname)
-                    fontname = self.canvas._fontname
+        fontname = select_fontname(node.get('name'), self.canvas._fontname)
         return self.canvas.setFont(fontname, utils.unit_get(node.get('size')))
 
     def render(self, node):
@@ -587,8 +612,20 @@ class _rml_Illustration(platypus.flowables.Flowable):
         drw = _rml_draw(self.localcontext ,self.node,self.styles, images=self.self2.images, path=self.self2.path, title=self.self2.title)
         drw.render(self.canv, None)
 
+# Workaround for issue #15: https://bitbucket.org/rptlab/reportlab/issue/15/infinite-pages-produced-when-splitting 
+original_pto_split = platypus.flowables.PTOContainer.split
+def split(self, availWidth, availHeight):
+    res = original_pto_split(self, availWidth, availHeight)
+    if len(res) > 2 and len(self._content) > 0:
+        header = self._content[0]._ptoinfo.header
+        trailer = self._content[0]._ptoinfo.trailer
+        if isinstance(res[-2], platypus.flowables.UseUpSpace) and len(header + trailer) == len(res[:-2]):
+            return []
+    return res
+platypus.flowables.PTOContainer.split = split
+
 class _rml_flowable(object):
-    def __init__(self, doc, localcontext, images=None, path='.', title=None):
+    def __init__(self, doc, localcontext, images=None, path='.', title=None, canvas=None):
         if images is None:
             images = {}
         self.localcontext = localcontext
@@ -597,6 +634,7 @@ class _rml_flowable(object):
         self.images = images
         self.path = path
         self.title = title
+        self.canvas = canvas
 
     def _textual(self, node):
         rc1 = utils._process_text(self, node.text or '')
@@ -606,9 +644,13 @@ class _rml_flowable(object):
                 if key in ('rml_except', 'rml_loop', 'rml_tag'):
                     del txt_n.attrib[key]
             if not n.tag == 'bullet':
-                txt_n.text = utils.xml2str(self._textual(n))
+                if n.tag == 'pageNumber': 
+                    txt_n.text = self.canvas and str(self.canvas.getPageNumber()) or ''
+                else:
+                    txt_n.text = utils.xml2str(self._textual(n))
             txt_n.tail = n.tail and utils.xml2str(utils._process_text(self, n.tail.replace('\n',''))) or ''
-            rc1 += etree.tostring(txt_n)
+
+            rc1 += str(etree.tostring(txt_n).decode())
         return rc1
 
     def _table(self, node):
@@ -715,17 +757,19 @@ class _rml_flowable(object):
         return platypus.flowables.PTOContainer(sub_story, trailer=pto_trailer, header=pto_header)
 
     def _flowable(self, node, extra_style=None):
-        if node.tag=='pto':
+        if node.tag == 'pto':
             return self._pto(node)
-        if node.tag=='para':
+        if node.tag == 'para':
             style = self.styles.para_style_get(node)
             if extra_style:
                 style.__dict__.update(extra_style)
-            result = []
-            for i in self._textual(node).split('\n'):
-                result.append(platypus.Paragraph(i, style, **(utils.attr_get(node, [], {'bulletText':'str'}))))
+            text_node = self._textual(node).strip().replace('\n\n', '\n').replace('\n', '<br/>')
+            instance = platypus.Paragraph(text_node, style, **(utils.attr_get(node, [], {'bulletText':'str'})))
+            result = [instance]
+            if LooseVersion(reportlab.Version) > LooseVersion('3.0') and not instance.getPlainText().strip() and instance.text.strip():
+                result.append(platypus.Paragraph('&nbsp;<br/>', style, **(utils.attr_get(node, [], {'bulletText': 'str'}))))
             return result
-        elif node.tag=='barCode':
+        elif node.tag == 'barCode':
             try:
                 from reportlab.graphics.barcode import code128
                 from reportlab.graphics.barcode import code39
@@ -758,20 +802,20 @@ class _rml_flowable(object):
             if node.get('code'):
                 code = node.get('code').lower()
             return codes[code](self._textual(node))
-        elif node.tag=='name':
-            self.styles.names[ node.get('id')] = node.get('value')
+        elif node.tag == 'name':
+            self.styles.names[node.get('id')] = node.get('value')
             return None
-        elif node.tag=='xpre':
+        elif node.tag == 'xpre':
             style = self.styles.para_style_get(node)
             return platypus.XPreformatted(self._textual(node), style, **(utils.attr_get(node, [], {'bulletText':'str','dedent':'int','frags':'int'})))
-        elif node.tag=='pre':
+        elif node.tag == 'pre':
             style = self.styles.para_style_get(node)
             return platypus.Preformatted(self._textual(node), style, **(utils.attr_get(node, [], {'bulletText':'str','dedent':'int'})))
-        elif node.tag=='illustration':
-            return  self._illustration(node)
-        elif node.tag=='blockTable':
-            return  self._table(node)
-        elif node.tag=='title':
+        elif node.tag == 'illustration':
+            return self._illustration(node)
+        elif node.tag == 'blockTable':
+            return self._table(node)
+        elif node.tag == 'title':
             styles = reportlab.lib.styles.getSampleStyleSheet()
             style = styles['Title']
             return platypus.Paragraph(self._textual(node), style, **(utils.attr_get(node, [], {'bulletText':'str'})))
@@ -779,7 +823,7 @@ class _rml_flowable(object):
             styles = reportlab.lib.styles.getSampleStyleSheet()
             style = styles['Heading'+str(node.tag[1:])]
             return platypus.Paragraph(self._textual(node), style, **(utils.attr_get(node, [], {'bulletText':'str'})))
-        elif node.tag=='image':
+        elif node.tag == 'image':
             image_data = False
             if not node.get('file'):
                 if node.get('name'):
@@ -803,7 +847,7 @@ class _rml_flowable(object):
                 _logger.debug("Image get from file %s", node.get('file'))
                 image = _open_image(node.get('file'), path=self.doc.path)
             return platypus.Image(image, mask=(250,255,250,255,250,255), **(utils.attr_get(node, ['width','height'])))
-        elif node.tag=='spacer':
+        elif node.tag == 'spacer':
             if node.get('width'):
                 width = utils.unit_get(node.get('width'))
             else:
@@ -861,6 +905,7 @@ class EndFrameFlowable(ActionFlowable):
     def __init__(self,resume=0):
         ActionFlowable.__init__(self,('frameEnd',resume))
 
+
 class TinyDocTemplate(platypus.BaseDocTemplate):
 
     def beforeDocument(self):
@@ -873,7 +918,7 @@ class TinyDocTemplate(platypus.BaseDocTemplate):
         self.page += 1
         self.pageTemplate.beforeDrawPage(self.canv,self)
         self.pageTemplate.checkPageSize(self.canv,self)
-        self.pageTemplate.onPage(self.canv,self)
+        self.pageTemplate.onPage(self.canv, self)
         for f in self.pageTemplate.frames: f._reset()
         self.beforePage()
         self._curPageFlowableCount = 0
@@ -886,6 +931,9 @@ class TinyDocTemplate(platypus.BaseDocTemplate):
         self.handle_frameBegin()
 
     def afterPage(self):
+        if isinstance(self.canv, NumberedCanvas):
+            # save current page states before eventual reset
+            self.canv._saved_page_states.append(dict(self.canv.__dict__))
         if self.canv._doPageReset:
             # Following a <pageReset/> tag:
             # - we reset page number to 0
@@ -903,22 +951,29 @@ class TinyDocTemplate(platypus.BaseDocTemplate):
             self.canv._doPageReset = False
             self.canv._storyCount += 1
 
+
 class _rml_template(object):
     def __init__(self, localcontext, out, node, doc, images=None, path='.', title=None):
         if images is None:
             images = {}
         if not localcontext:
-            localcontext={'internal_header':True}
+            localcontext = {'internal_header':True}
         self.localcontext = localcontext
-        self.images= images
+        self.images = images
         self.path = path
         self.title = title
 
         pagesize_map = {'a4': A4,
-                    'us_letter': letter
-                    }
-        pageSize = (841.8897637795275, 595.275590551181)
-        self.doc_tmpl = TinyDocTemplate(out, pagesize=pageSize, **utils.attr_get(node, ['leftMargin','rightMargin','topMargin','bottomMargin'], {'allowSplitting':'int','showBoundary':'bool','rotation':'int','title':'str','author':'str'}))
+                        'us_letter': letter
+                        }
+        pageSize = A4
+        if self.localcontext.get('company'):
+            pageSize = pagesize_map.get(self.localcontext.get('company').rml_paper_format, A4)
+        if node.get('pageSize'):
+            ps = map(lambda x:x.strip(), node.get('pageSize').replace(')', '').replace('(', '').split(','))
+            pageSize = ( utils.unit_get(ps[0]),utils.unit_get(ps[1]) )
+
+        self.doc_tmpl = TinyDocTemplate(out, pagesize=reportlab.lib.pagesizes.landscape(pageSize), **utils.attr_get(node, ['leftMargin','rightMargin','topMargin','bottomMargin'], {'allowSplitting':'int','showBoundary':'bool','rotation':'int','title':'str','author':'str'}))
         self.page_templates = []
         self.styles = doc.styles
         self.doc = doc
@@ -931,11 +986,11 @@ class _rml_template(object):
                 if utils.attr_get(frame_el, ['last']):
                     frame.lastFrame = True
                 frames.append( frame )
-            try :
+            try:
                 gr = pt.findall('pageGraphics')\
                     or pt[1].findall('pageGraphics')
             except Exception: # FIXME: be even more specific, perhaps?
-                gr=''
+                gr = ''
             if len(gr):
 #                self.image=[ n for n in utils._child_get(gr[0], self) if n.tag=='image' or not self.localcontext]
                 drw = _rml_draw(self.localcontext,gr[0], self.doc, images=images, path=self.path, title=self.title)
@@ -949,35 +1004,35 @@ class _rml_template(object):
         if self.localcontext and not self.localcontext.get('internal_header',False):
             del self.localcontext['internal_header']
         fis = []
-        r = _rml_flowable(self.doc,self.localcontext, images=self.images, path=self.path, title=self.title)
+        r = _rml_flowable(self.doc,self.localcontext, images=self.images, path=self.path, title=self.title, canvas=None)
         story_cnt = 0
         for node_story in node_stories:
             if story_cnt > 0:
                 fis.append(platypus.PageBreak())
             fis += r.render(node_story)
-            # Reset Page Number with new story tag
+            # end of story numbering computation
             fis.append(PageReset())
             story_cnt += 1
-        if self.localcontext and self.localcontext.get('internal_header',False):
-            self.doc_tmpl.afterFlowable(fis)
-            self.doc_tmpl.build(fis,canvasmaker=NumberedCanvas)
-        else:
-            self.doc_tmpl.build(fis)
+        try:
+            if self.localcontext and self.localcontext.get('internal_header',False):
+                self.doc_tmpl.afterFlowable(fis)
+                self.doc_tmpl.build(fis, canvasmaker=NumberedCanvas)
+            else:
+                self.doc_tmpl.build(fis)
+        except platypus.doctemplate.LayoutError as e:
+            e.name = 'Print Error'
+            e.value = 'The document you are trying to print contains a table row that does not fit on one page. Please try to split it in smaller rows or contact your administrator.'
+            raise
 
 def parseNode(rml, localcontext=None, fout=None, images=None, path='.', title=None):
     node = etree.XML(rml)
     r = _rml_doc(node, localcontext, images, path, title=title)
     #try to override some font mappings
     try:
-        from customfonts import SetCustomFonts
         SetCustomFonts(r)
-    except ImportError:
-        # means there is no custom fonts mapping in this system.
-        pass
-    except Exception:
-        _logger.warning('Cannot set font mapping', exc_info=True)
-        pass
-    fp = StringIO()
+    except Exception as exc:
+        _logger.info('Cannot set font mapping: %s', "".join(traceback.format_exception_only(type(exc),exc)))
+    fp = BytesIO()
     r.render(fp)
     return fp.getvalue()
 
@@ -987,33 +1042,30 @@ def parseString(rml, localcontext=None, fout=None, images=None, path='.', title=
 
     #try to override some font mappings
     try:
-        from customfonts import SetCustomFonts
         SetCustomFonts(r)
     except Exception:
         pass
 
     if fout:
-        fp = file(fout,'wb')
+        fp = open(fout, 'wb')
         r.render(fp)
         fp.close()
         return fout
     else:
-        fp = StringIO()
+        fp = BytesIO()
         r.render(fp)
         return fp.getvalue()
 
 def trml2pdf_help():
-    print 'Usage: trml2pdf input.rml >output.pdf'
-    print 'Render the standard input (RML) and output a PDF file'
+    print('Usage: trml2pdf input.rml >output.pdf')
+    print('Render the standard input (RML) and output a PDF file')
     sys.exit(0)
 
 if __name__=="__main__":
     if len(sys.argv)>1:
         if sys.argv[1]=='--help':
             trml2pdf_help()
-        print parseString(file(sys.argv[1], 'r').read()),
+        print(parseString(open(sys.argv[1], 'r').read()),)
     else:
-        print 'Usage: trml2pdf input.rml >output.pdf'
-        print 'Try \'trml2pdf --help\' for more information.'
-
-# vim:expandtab:smartindent:tabstop=4:softtabstop=4:shiftwidth=4:
+        print('Usage: trml2pdf input.rml >output.pdf')
+        print('Try \'trml2pdf --help\' for more information.')
